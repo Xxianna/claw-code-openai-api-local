@@ -6393,7 +6393,7 @@ impl ApiClient for RuntimeClient {
     }
 }
 
-impl AnthropicRuntimeClient {
+impl RuntimeClient {
     /// Consume a single streaming response, optionally applying a stall
     /// timeout on the first event for post-tool continuations.
     #[allow(clippy::too_many_lines)]

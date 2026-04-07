@@ -1,5 +1,21 @@
 # Claw Code
 
+## 本fork使用说明：
+
+- 例如，将项目 clone 到 ```/home/u/prj/llm/claw-code```
+```bash
+cd rust
+cargo build --workspace
+```
+- 在 ~ 下创建以下脚本
+```
+OPENAI_API_KEY="your-api-key" OPENAI_BASE_URL="http://192.168.0.195:8000/v1" /home/u/prj/llm/claw-code/rust/target/debug/claw --model Qwen/Qwen3.5-27B-FP8
+```
+- 执行上述脚本，开始使用
+
+
+
+
 <p align="center">
   <a href="https://github.com/ultraworkers/claw-code">ultraworkers/claw-code</a>
   ·
