@@ -414,42 +414,46 @@ impl StreamState {
         }
 
         for choice in chunk.choices {
-            if let Some(content) = choice.delta.content.filter(|value| !value.is_empty()) {
-                if !self.text_started {
-                    self.text_started = true;
-                    events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
+            if let Some(ChunkDeltaContent::String(content)) = choice.delta.content {
+                if !content.is_empty() {
+                    if !self.text_started {
+                        self.text_started = true;
+                        events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
+                            index: 0,
+                            content_block: OutputContentBlock::Text {
+                                text: String::new(),
+                            },
+                        }));
+                    }
+                    events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
                         index: 0,
-                        content_block: OutputContentBlock::Text {
-                            text: String::new(),
-                        },
+                        delta: ContentBlockDelta::TextDelta { text: content },
                     }));
                 }
-                events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
-                    index: 0,
-                    delta: ContentBlockDelta::TextDelta { text: content },
-                }));
             }
 
-            for tool_call in choice.delta.tool_calls {
-                let state = self.tool_calls.entry(tool_call.index).or_default();
-                state.apply(tool_call);
-                let block_index = state.block_index();
-                if !state.started {
-                    if let Some(start_event) = state.start_event()? {
-                        state.started = true;
-                        events.push(StreamEvent::ContentBlockStart(start_event));
-                    } else {
-                        continue;
+            if let Some(tool_calls) = choice.delta.tool_calls {
+                for tool_call in tool_calls {
+                    let state = self.tool_calls.entry(tool_call.index).or_default();
+                    state.apply(tool_call);
+                    let block_index = state.block_index();
+                    if !state.started {
+                        if let Some(start_event) = state.start_event()? {
+                            state.started = true;
+                            events.push(StreamEvent::ContentBlockStart(start_event));
+                        } else {
+                            continue;
+                        }
                     }
-                }
-                if let Some(delta_event) = state.delta_event() {
-                    events.push(StreamEvent::ContentBlockDelta(delta_event));
-                }
-                if choice.finish_reason.as_deref() == Some("tool_calls") && !state.stopped {
-                    state.stopped = true;
-                    events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
-                        index: block_index,
-                    }));
+                    if let Some(delta_event) = state.delta_event() {
+                        events.push(StreamEvent::ContentBlockDelta(delta_event));
+                    }
+                    if choice.finish_reason.as_deref() == Some("tool_calls") && !state.stopped {
+                        state.stopped = true;
+                        events.push(StreamEvent::ContentBlockStop(ContentBlockStopEvent {
+                            index: block_index,
+                        }));
+                    }
                 }
             }
 
@@ -609,9 +613,16 @@ struct ChatChoice {
 struct ChatMessage {
     role: String,
     #[serde(default)]
-    content: Option<String>,
+    content: Option<ChatMessageContent>,
     #[serde(default)]
-    tool_calls: Vec<ResponseToolCall>,
+    tool_calls: Option<Vec<ResponseToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ChatMessageContent {
+    String(String),
+    Null,
 }
 
 #[derive(Debug, Deserialize)]
@@ -655,9 +666,16 @@ struct ChunkChoice {
 #[derive(Debug, Default, Deserialize)]
 struct ChunkDelta {
     #[serde(default)]
-    content: Option<String>,
+    content: Option<ChunkDeltaContent>,
     #[serde(default)]
-    tool_calls: Vec<DeltaToolCall>,
+    tool_calls: Option<Vec<DeltaToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ChunkDeltaContent {
+    String(String),
+    Null,
 }
 
 #[derive(Debug, Deserialize)]
@@ -709,6 +727,23 @@ fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatC
         "stream": request.stream,
     });
 
+    // Add sampling parameters
+    if let Some(temperature) = request.temperature {
+        payload["temperature"] = json!(temperature);
+    }
+    if let Some(top_p) = request.top_p {
+        payload["top_p"] = json!(top_p);
+    }
+    if let Some(presence_penalty) = request.presence_penalty {
+        payload["presence_penalty"] = json!(presence_penalty);
+    }
+    if let Some(frequency_penalty) = request.frequency_penalty {
+        payload["frequency_penalty"] = json!(frequency_penalty);
+    }
+    if let Some(top_k) = request.top_k {
+        payload["top_k"] = json!(top_k);
+    }
+
     if request.stream && should_request_stream_usage(config) {
         payload["stream_options"] = json!({ "include_usage": true });
     }
@@ -719,6 +754,17 @@ fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatC
     }
     if let Some(tool_choice) = &request.tool_choice {
         payload["tool_choice"] = openai_tool_choice(tool_choice);
+    }
+
+    // Add extra_body if present
+    if let Some(extra_body) = &request.extra_body {
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(extra_obj) = extra_body.as_object() {
+                for (key, value) in extra_obj {
+                    obj.insert(key.clone(), value.clone());
+                }
+            }
+        }
     }
 
     payload
@@ -826,15 +872,19 @@ fn normalize_response(
             "chat completion response missing choices",
         ))?;
     let mut content = Vec::new();
-    if let Some(text) = choice.message.content.filter(|value| !value.is_empty()) {
-        content.push(OutputContentBlock::Text { text });
+    if let Some(ChatMessageContent::String(text)) = choice.message.content {
+        if !text.is_empty() {
+            content.push(OutputContentBlock::Text { text });
+        }
     }
-    for tool_call in choice.message.tool_calls {
-        content.push(OutputContentBlock::ToolUse {
-            id: tool_call.id,
-            name: tool_call.function.name,
-            input: parse_tool_arguments(&tool_call.function.arguments),
-        });
+    if let Some(tool_calls) = choice.message.tool_calls {
+        for tool_call in tool_calls {
+            content.push(OutputContentBlock::ToolUse {
+                id: tool_call.id,
+                name: tool_call.function.name,
+                input: parse_tool_arguments(&tool_call.function.arguments),
+            });
+        }
     }
 
     Ok(MessageResponse {

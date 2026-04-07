@@ -2808,7 +2808,7 @@ struct RuntimeMcpState {
 }
 
 struct BuiltRuntime {
-    runtime: Option<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>>,
+    runtime: Option<ConversationRuntime<RuntimeClient, CliToolExecutor>>,
     plugin_registry: PluginRegistry,
     plugins_active: bool,
     mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
@@ -2817,7 +2817,7 @@ struct BuiltRuntime {
 
 impl BuiltRuntime {
     fn new(
-        runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+        runtime: ConversationRuntime<RuntimeClient, CliToolExecutor>,
         plugin_registry: PluginRegistry,
         mcp_state: Option<Arc<Mutex<RuntimeMcpState>>>,
     ) -> Self {
@@ -2862,7 +2862,7 @@ impl BuiltRuntime {
 }
 
 impl Deref for BuiltRuntime {
-    type Target = ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>;
+    type Target = ConversationRuntime<RuntimeClient, CliToolExecutor>;
 
     fn deref(&self) -> &Self::Target {
         self.runtime
@@ -6156,7 +6156,7 @@ fn build_runtime_with_plugin_state(
         .map_err(std::io::Error::other)?;
     let mut runtime = ConversationRuntime::new_with_features(
         session,
-        AnthropicRuntimeClient::new(
+        RuntimeClient::new(
             session_id,
             model,
             enable_tools,
@@ -6263,9 +6263,9 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
     }
 }
 
-struct AnthropicRuntimeClient {
+struct RuntimeClient {
     runtime: tokio::runtime::Runtime,
-    client: AnthropicClient,
+    client: api::ProviderClient,
     session_id: String,
     model: String,
     enable_tools: bool,
@@ -6275,7 +6275,7 @@ struct AnthropicRuntimeClient {
     progress_reporter: Option<InternalPromptProgressReporter>,
 }
 
-impl AnthropicRuntimeClient {
+impl RuntimeClient {
     fn new(
         session_id: &str,
         model: String,
@@ -6285,11 +6285,10 @@ impl AnthropicRuntimeClient {
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let provider_client = api::ProviderClient::from_model(&model)?;
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url())
-                .with_prompt_cache(PromptCache::new(session_id)),
+            client: provider_client.with_prompt_cache(PromptCache::new(session_id)),
             session_id: session_id.to_string(),
             model,
             enable_tools,
@@ -6327,7 +6326,7 @@ fn load_runtime_oauth_config_for(cwd: &Path) -> Result<Option<OAuthConfig>, api:
     Ok(config.oauth().cloned())
 }
 
-impl ApiClient for AnthropicRuntimeClient {
+impl ApiClient for RuntimeClient {
     #[allow(clippy::too_many_lines)]
     fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
         if let Some(progress_reporter) = &self.progress_reporter {
@@ -6344,6 +6343,25 @@ impl ApiClient for AnthropicRuntimeClient {
                 .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref())),
             tool_choice: self.enable_tools.then_some(ToolChoice::Auto),
             stream: true,
+            // Sampling parameters from environment or defaults
+            temperature: std::env::var("CLAW_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            top_p: std::env::var("CLAW_TOP_P")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            presence_penalty: std::env::var("CLAW_PRESENCE_PENALTY")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            frequency_penalty: std::env::var("CLAW_FREQUENCY_PENALTY")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            top_k: std::env::var("CLAW_TOP_K")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            extra_body: std::env::var("CLAW_EXTRA_BODY")
+                .ok()
+                .and_then(|v| serde_json::from_str(&v).ok()),
         };
 
         self.runtime.block_on(async {
@@ -7314,7 +7332,7 @@ fn response_to_events(
     Ok(events)
 }
 
-fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<AssistantEvent>) {
+fn push_prompt_cache_record(client: &api::ProviderClient, events: &mut Vec<AssistantEvent>) {
     if let Some(record) = client.take_last_prompt_cache_record() {
         if let Some(event) = prompt_cache_record_to_runtime_event(record) {
             events.push(AssistantEvent::PromptCache(event));

@@ -153,7 +153,9 @@ pub fn resolve_model_alias(model: &str) -> String {
 #[must_use]
 pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     let canonical = resolve_model_alias(model);
-    if canonical.starts_with("claude") {
+    let canonical_lower = canonical.to_ascii_lowercase();
+    
+    if canonical_lower.starts_with("claude") {
         return Some(ProviderMetadata {
             provider: ProviderKind::Anthropic,
             auth_env: "ANTHROPIC_API_KEY",
@@ -161,7 +163,7 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: anthropic::DEFAULT_BASE_URL,
         });
     }
-    if canonical.starts_with("grok") {
+    if canonical_lower.starts_with("grok") {
         return Some(ProviderMetadata {
             provider: ProviderKind::Xai,
             auth_env: "XAI_API_KEY",
@@ -169,6 +171,16 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         });
     }
+    // Qwen models use OpenAI-compatible API
+    // if canonical_lower.contains("qwen") {
+    // 其他情况：识别为 openai api
+    return Some(ProviderMetadata {
+        provider: ProviderKind::OpenAi,
+        auth_env: "OPENAI_API_KEY",
+        base_url_env: "OPENAI_BASE_URL",
+        default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+    });
+    // }
     None
 }
 
@@ -446,6 +458,12 @@ mod tests {
             }]),
             tool_choice: Some(ToolChoice::Auto),
             stream: true,
+            temperature: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            top_k: None,
+            extra_body: None,
         };
 
         let error = preflight_message_request(&request)
@@ -484,6 +502,12 @@ mod tests {
             tools: None,
             tool_choice: None,
             stream: false,
+            temperature: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            top_k: None,
+            extra_body: None,
         };
 
         preflight_message_request(&request)

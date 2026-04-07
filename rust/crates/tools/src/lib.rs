@@ -3792,6 +3792,12 @@ impl ApiClient for ProviderRuntimeClient {
                 tools: (!tools.is_empty()).then(|| tools.clone()),
                 tool_choice: tool_choice.clone(),
                 stream: true,
+                temperature: None,
+                top_p: None,
+                presence_penalty: None,
+                frequency_penalty: None,
+                top_k: None,
+                extra_body: None,
             };
 
             let attempt = runtime.block_on(stream_with_provider(&entry.client, &message_request));
